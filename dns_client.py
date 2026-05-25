@@ -4,6 +4,7 @@ import json
 import random
 import socket
 import struct
+import sys
 import time
 
 
@@ -72,7 +73,7 @@ def encode_name(name):
         label_bytes = label.encode("ascii")
 
         if len(label_bytes) > 63:
-            raise DNSError("DNS label is too long")
+            raise DNSError("bad label")
 
         result.append(len(label_bytes))
         result.extend(label_bytes)
@@ -105,18 +106,12 @@ def build_query(name, qtype=TYPE_A, use_edns=True):
     if not use_edns:
         return transaction_id, header + question
 
-    opt_name = b"\x00"
-    opt_type = TYPE_OPT
-    udp_payload_size = 1232
-    extended_rcode_version_flags = 0
-    rdlength = 0
-
-    opt_record = opt_name + struct.pack(
+    opt_record = b"\x00" + struct.pack(
         "!HHIH",
-        opt_type,
-        udp_payload_size,
-        extended_rcode_version_flags,
-        rdlength,
+        TYPE_OPT,
+        1232,
+        0,
+        0,
     )
 
     return transaction_id, header + question + opt_record
@@ -130,18 +125,18 @@ def decode_name(packet, offset):
 
     while True:
         if offset >= len(packet):
-            raise DNSError("name offset is outside packet")
+            raise DNSError("bad name")
 
         length = packet[offset]
 
         if (length & 0xC0) == 0xC0:
             if offset + 1 >= len(packet):
-                raise DNSError("truncated compression pointer")
+                raise DNSError("bad pointer")
 
             pointer = ((length & 0x3F) << 8) | packet[offset + 1]
 
             if pointer in visited_offsets:
-                raise DNSError("compression pointer loop")
+                raise DNSError("bad pointer")
 
             visited_offsets.add(pointer)
 
@@ -153,7 +148,7 @@ def decode_name(packet, offset):
             continue
 
         if (length & 0xC0) != 0:
-            raise DNSError("invalid DNS label length")
+            raise DNSError("bad label")
 
         offset += 1
 
@@ -163,7 +158,7 @@ def decode_name(packet, offset):
             break
 
         if offset + length > len(packet):
-            raise DNSError("truncated DNS label")
+            raise DNSError("bad label")
 
         label = packet[offset:offset + length].decode("ascii", errors="replace")
         labels.append(label)
@@ -176,7 +171,7 @@ def parse_record(packet, offset):
     name, offset = decode_name(packet, offset)
 
     if offset + 10 > len(packet):
-        raise DNSError("truncated resource record header")
+        raise DNSError("bad record")
 
     rtype, rclass, ttl, rdlength = struct.unpack_from("!HHIH", packet, offset)
     offset += 10
@@ -185,7 +180,7 @@ def parse_record(packet, offset):
     rdata_end = offset + rdlength
 
     if rdata_end > len(packet):
-        raise DNSError("truncated resource record data")
+        raise DNSError("bad record")
 
     raw_rdata = packet[rdata_offset:rdata_end]
 
@@ -215,7 +210,7 @@ def parse_record(packet, offset):
 
 def parse_response(packet, expected_id):
     if len(packet) < 12:
-        raise DNSError("DNS response is too short")
+        raise DNSError("bad response")
 
     transaction_id, flags, qdcount, ancount, nscount, arcount = struct.unpack_from(
         "!HHHHHH",
@@ -224,12 +219,12 @@ def parse_response(packet, expected_id):
     )
 
     if transaction_id != expected_id:
-        raise DNSError("transaction ID mismatch")
+        raise DNSError("bad id")
 
     rcode = flags & 0x000F
 
     if rcode != 0:
-        raise DNSError("DNS server returned error rcode=" + str(rcode))
+        raise DNSError("bad rcode")
 
     offset = 12
 
@@ -239,7 +234,7 @@ def parse_response(packet, expected_id):
         qname, offset = decode_name(packet, offset)
 
         if offset + 4 > len(packet):
-            raise DNSError("truncated question section")
+            raise DNSError("bad question")
 
         qtype, qclass = struct.unpack_from("!HH", packet, offset)
         offset += 4
@@ -286,7 +281,7 @@ def recv_all(sock, length):
         chunk = sock.recv(remaining)
 
         if not chunk:
-            raise DNSError("TCP DNS connection closed early")
+            raise DNSError("recv fail")
 
         chunks.append(chunk)
         remaining -= len(chunk)
@@ -350,7 +345,7 @@ def query_any_server(servers, name, qtype=TYPE_A):
         except Exception as exc:
             last_error = exc
 
-    raise DNSError("all DNS servers failed for " + name + ": " + str(last_error))
+    raise DNSError("query fail")
 
 
 def get_a_records(response, name):
@@ -456,7 +451,7 @@ def resolve_iterative(name, qtype=TYPE_A, verbose=False, max_depth=20):
         ns_names = get_ns_names(response)
 
         if len(ns_names) == 0:
-            raise DNSError("no A records, CNAMEs, or NS referrals found for " + name)
+            raise DNSError("no ns")
 
         next_servers = get_glue_ips(response, ns_names)
 
@@ -486,11 +481,11 @@ def resolve_iterative(name, qtype=TYPE_A, verbose=False, max_depth=20):
         next_servers = unique_keep_order(next_servers)
 
         if len(next_servers) == 0:
-            raise DNSError("could not find IP addresses for next DNS servers")
+            raise DNSError("no next server")
 
         current_servers = next_servers
 
-    raise DNSError("resolution exceeded max depth for " + name)
+    raise DNSError("too deep")
 
 
 def measure_http_rtt(ips, host_header):
@@ -523,7 +518,7 @@ def measure_http_rtt(ips, host_header):
         except Exception as exc:
             last_error = exc
 
-    raise OSError("HTTP request failed for all resolved IPs: " + str(last_error))
+    raise OSError("request fail")
 
 
 def main():
@@ -532,9 +527,9 @@ def main():
         ips = unique_keep_order(ips)
         print("Step 4 [" + DOMAIN + "]: A records = " + ", ".join(ips))
 
-    except Exception as exc:
-        print("Step 4 [" + DOMAIN + "]: A records = ")
-        raise SystemExit("DNS resolution failed: " + str(exc))
+    except Exception:
+        print("request fail", file=sys.stderr)
+        raise SystemExit(1)
 
     try:
         http_ip, http_rtt_ms = measure_http_rtt(ips, DOMAIN)
@@ -542,6 +537,7 @@ def main():
     except Exception:
         http_ip = ips[0] if len(ips) > 0 else "0.0.0.0"
         http_rtt_ms = -1.0
+        print("request fail", file=sys.stderr)
 
     dns_rtt_ms = round(dns_rtt_ms, 1)
     http_rtt_ms = round(http_rtt_ms, 1)

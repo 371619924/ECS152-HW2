@@ -153,7 +153,7 @@ def names_from_har_cookie_list(cookies):
         name = cookie.get("name")
 
         if name:
-            answer.append(str(name))
+            answer.append(str(name).strip().lower())
 
     return answer
 
@@ -167,7 +167,7 @@ def names_from_cookie_header(value):
         if "=" not in part:
             continue
 
-        name = part.split("=", 1)[0].strip()
+        name = part.split("=", 1)[0].strip().lower()
 
         if name:
             answer.append(name)
@@ -181,7 +181,7 @@ def name_from_set_cookie(value):
     if "=" not in first:
         return ""
 
-    return first.split("=", 1)[0].strip()
+    return first.split("=", 1)[0].strip().lower()
 
 
 def request_cookie_names(request):
@@ -237,7 +237,7 @@ def mime_type(response):
         if mime:
             return mime
 
-    return ""
+    return "unknown"
 
 
 def body_size(response):
@@ -339,17 +339,15 @@ def add_har_data(data, totals):
             for name in response_cookie_names(response):
                 totals["third_party_cookies"][name] += 1
 
-        mime = mime_type(response)
-
-        if mime:
-            totals["content_types"][mime] += 1
-
+        totals["content_types"][mime_type(response)] += 1
         bytes_total += body_size(response)
 
-    totals["third_party_by_site"][site] += third_party_requests
-    totals["https_by_site"][site]["https"] += https_requests
-    totals["https_by_site"][site]["total"] += total_requests
-    totals["size_by_site"][site] += bytes_total
+    totals["third_party_by_site"][site] = third_party_requests
+    totals["https_by_site"][site] = {
+        "https": https_requests,
+        "total": total_requests,
+    }
+    totals["size_by_site"][site] = bytes_total
 
 
 def top_list(counter, field_name):

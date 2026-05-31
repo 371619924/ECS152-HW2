@@ -265,7 +265,7 @@ def describe_cookie(name):
         if key.startswith(prefix):
             return description
 
-    return "Third-party cookie used for advertising, analytics, consent, security, or session functionality depending on the provider."
+    return "Third-party cookie used for advertising and analytics and consent security or session functionality depending on the provider"
 
 
 def skip_file(path):
